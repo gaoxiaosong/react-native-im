@@ -1,14 +1,16 @@
 import React from 'react';
-import {Clipboard, Keyboard, SafeAreaView, StyleSheet, TouchableWithoutFeedback, View} from 'react-native';
+import {Clipboard, Keyboard, SafeAreaView, StyleSheet, TouchableWithoutFeedback,Image, View, Alert,Text,TouchableOpacity} from 'react-native';
 import {HeaderButton} from 'react-navigation-header-buttons';
 import Toast from 'react-native-root-toast';
-import Listener from 'react-native-general-listener';
+import Listener from '@hecom/listener';
 import i18n from 'i18n-js';
 import * as PageKeys from '../pagekey';
 import * as Model from '../model';
 import {DateUtil, guid} from '../util';
 import {Conversation, Event, Message} from '../typings';
 import delegate from '../delegate';
+import { StackActions } from '@react-navigation/native';
+import { IMConstant } from 'react-native-im-easemob';
 
 interface ChatDetailProps {
     imId: string
@@ -16,11 +18,15 @@ interface ChatDetailProps {
 }
 
 export default class extends React.PureComponent<ChatDetailProps> {
-    static navigationOptions = function ({navigation}) {
-        const {_title_, _right_} = navigation.state.params;
+    static navigationOptions = function ({route}) {
+        const {_title_, _right_, _marginHorizontal_} = route.params;
+        const titleContainerStyle = !!_marginHorizontal_ ? { marginHorizontal: _marginHorizontal_ } : {}
         return {
             title: _title_,
             headerRight: _right_,
+            headerTitleContainerStyle: {
+                ...titleContainerStyle
+            }
         };
     };
 
@@ -68,6 +74,7 @@ export default class extends React.PureComponent<ChatDetailProps> {
             [Event.SendMessage, this._onReceiveMessage.bind(this)],
             [Event.ReceiveMessage, this._onReceiveMessage.bind(this)],
             this.isGroup && [Event.Group, this._setNaviBar.bind(this)],
+            [Event.GroupLeave, this._userLeave.bind(this)],
         ].filter(i => !!i).forEach(([eventType, func], index) => {
             this.listeners[index] = Listener.register(
                 [Event.Base, eventType, this.props.imId],
@@ -125,19 +132,25 @@ export default class extends React.PureComponent<ChatDetailProps> {
     _setNaviBar() {
         const {imId} = this.props;
         let title;
+        let marginHorizontal;
         if (this.isGroup) {
             const groupName = delegate.model.Group.getName(imId, false) || i18n.t('IMCommonChatTypeGroup');
             title = groupName + ' (' + delegate.model.Group.getMembers(imId).length + ')';
+            marginHorizontal = 97;
         } else {
             title = delegate.user.getUser(imId).name;
+            marginHorizontal = 50;
         }
         this.props.navigation.setParams({
             _title_: title,
-            _right_: this._renderRightElement(),
+            _right_: this._renderRightElement.bind(this),
+            _marginHorizontal_: marginHorizontal
         });
     }
 
     _renderContent() {
+        const {imId} = this.props;
+        const conversation = delegate.model.Conversation.getOne(imId, false)
         return (
             <View style={styles.container}>
                 <delegate.component.DetailListView
@@ -146,6 +159,7 @@ export default class extends React.PureComponent<ChatDetailProps> {
                     style={styles.fixedList}
                     renderItem={this._renderItem.bind(this)}
                     onLoadPage={this._refresh.bind(this)}
+                    oldUnreadMessageCount={Math.min(100, (!conversation ? 0 : conversation.unreadMessagesCount))}
                 />
                 <View style={styles.flexList} />
             </View>
@@ -153,20 +167,25 @@ export default class extends React.PureComponent<ChatDetailProps> {
     }
 
     _renderRightElement() {
-        return (
-            <HeaderButton
-                title={i18n.t('IMPageChatDetailSetting')}
-                onPress={() => {
-                    this.props.navigation.navigate({
-                        routeName: PageKeys.ChatSetting,
-                        params: {
-                            imId: this.props.imId,
-                            chatType: this.props.chatType,
-                        },
-                    });
-                }}
-            />
-        );
+        const {imId, chatType} = this.props;
+        const onSendMsg = this._onSendMessage.bind(this, imId, chatType)
+        const moreImage = require('./image/showMore.png');
+        return (<TouchableOpacity
+            onPress={() => {
+                this.props.navigation.navigate( PageKeys.ChatSetting,{
+                    imId: imId,
+                    chatType: chatType,
+                    onSendMessage: onSendMsg,
+                });
+            }}
+            activeOpacity={0.8}
+        >
+            <Image
+                    source={moreImage}
+                    style={styles.rightImage}
+                />
+        </TouchableOpacity>
+    )
     }
 
     _setKeyboardStatus(status) {
@@ -179,27 +198,49 @@ export default class extends React.PureComponent<ChatDetailProps> {
         });
     }
 
-    protected async _refresh(oldData) {
+    protected async _refresh(oldData, pageSize = this.pageCount) {
         const isFirst = !oldData || oldData.length <= 0;
         const lastMessage = isFirst ? undefined : this.lastMessage;
         const loadPromise = delegate.im.conversation.loadMessage({
             imId: this.props.imId,
             chatType: this.props.chatType,
             lastMessage: lastMessage,
-            count: this.pageCount,
+            count: pageSize,
         });
         const markPromise = this._markAllRead();
         let [result] = await Promise.all([loadPromise, markPromise]);
         result = result
             .map(item => Model.Action.Parse.get(undefined, item, item))
+            .filter((item)=> !!item)
             .sort((a, b) => a.timestamp >= b.timestamp ? -1 : 1);
         if (result && result.length > 0) {
             this.lastMessage = result[result.length - 1];
         }
         return {
             data: result,
-            isEnd: result.length < this.pageCount,
+            isEnd: result.length < pageSize,
         };
+    }
+
+    _userLeave(data){
+        const {reason} = data;
+        let message = '';
+        if (reason == 0) {
+            message = '您已被移出群聊';
+        } else if (reason == 2) {
+            message = '群聊已解散';
+        }
+
+        if (message.length > 0) {
+            this._unRegisterListener();
+            Alert.alert('提示', message, [
+                {text: i18n.t('IMCommonOK'), onPress: () => {
+                    this.props.navigation.dispatch(
+                        StackActions.popToTop({})
+                    );
+                }},
+            ]);
+        }
     }
 
     _insertMessageToList(message) {
@@ -250,7 +291,9 @@ export default class extends React.PureComponent<ChatDetailProps> {
         const canRecall = interval < 5 * 60;
         if (messageType === delegate.config.messageType.text) {
             actionList.push({title: '复制', action: this._onCopy.bind(this, message)});
-            this.isGroup && !isSender && actionList.push({
+        }
+        if (messageType != delegate.config.messageType.voice){
+            actionList.push({
                 title: '引用',
                 action: this._onQuote.bind(this, message)
             });
@@ -273,17 +316,15 @@ export default class extends React.PureComponent<ChatDetailProps> {
     _onCopy(message) {
         const text = message.data.text;
         Clipboard.setString(text);
+        Toast.show('复制成功');
     }
 
     _onForward(message) {
-        this.props.navigation.navigate({
-            routeName: PageKeys.ChooseConversation,
-            params: {
+        this.props.navigation.navigate(PageKeys.ChooseConversation,{
                 title: i18n.t('IMPageChooseConversationTitle'),
                 onSelectData: this._onSelectConversation.bind(this, message),
                 excludedIds: [this.props.imId],
-            },
-        });
+            });
     }
 
     async _onRecall(message) {
@@ -298,7 +339,8 @@ export default class extends React.PureComponent<ChatDetailProps> {
     }
 
     _onQuote(item) {
-        this.bottomBar.changeInputText(item.from, item.data.text);
+        // this.bottomBar.changeInputText(item.from, item.data.text);
+        this.bottomBar.quoteMsg(item);
     }
 
     _onSelectConversation(message, conversations) {
@@ -329,11 +371,26 @@ export default class extends React.PureComponent<ChatDetailProps> {
                 messages={messageList}
                 onShowMenu={this._onShowMenu.bind(this)}
                 navigation={this.props.navigation}
+                onLongPressAvatar={this._onLongPressAvatar}
             />
         );
     }
 
+    _onLongPressAvatar =(params: Message.General)=>{
+        if (this.props.chatType !==Conversation.ChatType.Group) {
+            return;
+        }
+        const isMe = params.from === delegate.user.getMine().userId;
+        const canResponse = params.data.isSystem ? 0 : isMe ? 0 : 1;
+        if (canResponse) {
+            this.bottomBar.insertAtMember([params.from])
+        }
+    }
+
     _generateMessage(type, body, others = {}) {
+        if (type == IMConstant.MessageType.image && body && body.mineType && body.mineType.startsWith('video')) {
+            type = IMConstant.MessageType.video;
+        }
         return {
             conversationId: this.props.imId,
             messageId: undefined,
@@ -368,5 +425,10 @@ const styles = StyleSheet.create({
     },
     container: {
         flex: 1,
+    },
+    rightImage: {
+        width: 24,
+        height: 24,
+        right: 10,
     },
 });

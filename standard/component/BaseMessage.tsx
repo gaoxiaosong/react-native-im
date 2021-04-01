@@ -1,11 +1,12 @@
 import React from 'react';
-import {ActivityIndicator, Image, ImageStyle, StyleSheet, Text, TouchableWithoutFeedback, View} from 'react-native';
-import Listener, {ListenerObjType} from 'react-native-general-listener';
+import {EmitterSubscription, ActivityIndicator, Image, ImageStyle, StyleSheet, Text, TouchableWithoutFeedback, View} from 'react-native';
+import Listener from '@hecom/listener';
 import Toast from 'react-native-root-toast';
 import {Component, Event, Message} from '../typings';
 import delegate from '../delegate';
 
 export type Props = Component.BaseMessageProps;
+export type ListenerObjType = EmitterSubscription;
 
 export interface State {
     showMembersName: boolean;
@@ -139,7 +140,10 @@ export default class extends React.PureComponent<Props, State> {
             ? {uri: delegate.func.fitUrlForAvatarSize(avatar, size)}
             : defaultImage;
         return (
-            <TouchableWithoutFeedback onPress={() => delegate.func.pushToUserDetailPage(imId)}>
+            <TouchableWithoutFeedback
+                onPress={() => delegate.func.pushToUserDetailPage(imId)}
+                onLongPress={() => this.props.onLongPressAvatar && this.props.onLongPressAvatar(this.props.message)}
+            >
                 <Image
                     style={[styles.userImage, innerStyle, style]}
                     source={image}
